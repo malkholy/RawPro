@@ -8,6 +8,7 @@ import StatementsPage     from "./pages/Statements/index.jsx"
 import ReportsPage        from "./pages/Reports/index.jsx"
 import VendorPage         from "./pages/Vendor/index.jsx"
 import CustomerPage       from "./pages/Customer/index.jsx"
+import BalancesPage       from "./pages/Balances/index.jsx"
 
 const NAV = [
   { key: "vendor_master",   label: "Vendor Master",       icon: "🏢", section: "Master Data" },
@@ -16,6 +17,7 @@ const NAV = [
   { key: "treasury",   label: "Treasury",            icon: "🏦", section: "Finance Modules" },
   { key: "vendor",     label: "Vendor Invoices",     icon: "📦", section: "Finance Modules" },
   { key: "customer",   label: "Customer Invoices",   icon: "🧾", section: "Finance Modules" },
+  { key: "balances",   label: "Balances Summary",    icon: "⚖️", section: "Analytics" },
   { key: "statements", label: "Statements",          icon: "📋", section: "Analytics" },
   { key: "reports",    label: "Reports",             icon: "📊", section: "Analytics" },
 ]
@@ -27,6 +29,7 @@ const PAGES = {
   treasury:   { title: "Treasury",           component: <TreasuryPage /> },
   vendor:     { title: "Vendor Invoices",    component: <VendorInvoicePage /> },
   customer:   { title: "Customer Invoices",  component: <CustomerInvoicePage /> },
+  balances:   { title: "Balances Summary",   component: <BalancesPage /> },
   statements: { title: "Statements",         component: <StatementsPage /> },
   reports:    { title: "Reports",            component: <ReportsPage /> },
 }
