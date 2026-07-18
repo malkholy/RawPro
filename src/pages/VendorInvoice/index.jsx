@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react"
 import { apiCall, fmt, today } from "../../shared/api.js"
-import { KPICard, SectionCard, DataTable, Btn, Badge, Modal, FormGrid, Field, Input, Textarea, LinesEditor } from "../../shared/UI.jsx"
+import { KPICard, SectionCard, DataTable, Btn, Badge, Modal, FormGrid, Field, Input, Select, Textarea, LinesEditor } from "../../shared/UI.jsx"
 
 function AutoComplete({ value, onChange, options, placeholder }) {
   const [open, setOpen]       = useState(false)
@@ -61,11 +61,17 @@ function AutoComplete({ value, onChange, options, placeholder }) {
 
 const EMPTY_HDR = { VendorName: "", InvoiceNo: "", InvoiceDate: today(), DueDate: "", Notes: "" }
 
+const norm = (str) => (str || "").replace(/\s+/g, "").toLowerCase()
+
 export default function VendorInvoicePage() {
   const [invoices, setInvoices] = useState([])
   const [vendors, setVendors]   = useState([])
+  const [treasury, setTreasury] = useState([])
   const [loading, setLoading]   = useState(true)
   const [search, setSearch]     = useState("")
+  const [selectedVendor, setSelectedVendor] = useState("")
+  const [sortBy, setSortBy]     = useState("date")
+  const [sortOrder, setSortOrder] = useState("desc")
   const [modal, setModal]       = useState(false)
   const [form, setForm]         = useState(EMPTY_HDR)
   const [lines, setLines]       = useState([])
@@ -86,6 +92,16 @@ export default function VendorInvoicePage() {
   const submitPay = async () => {
     if (!payForm.Amount || parseFloat(payForm.Amount) <= 0) return alert("Enter a valid amount")
     if (parseFloat(payForm.Amount) > parseFloat(payInv.Balance)) return alert("Amount exceeds invoice balance of " + fmt(payInv.Balance))
+    
+    const vendorPayments = treasury.filter(t => norm(t.Party) === norm(payInv.VendorName) && t.TxType === "Payment").reduce((s, t) => s + parseFloat(t.Amount || 0), 0)
+    const vendorReceipts = treasury.filter(t => norm(t.Party) === norm(payInv.VendorName) && t.TxType === "Receipt").reduce((s, t) => s + parseFloat(t.Amount || 0), 0)
+    const vendorPaidInvoices = invoices.filter(i => norm(i.VendorName) === norm(payInv.VendorName)).reduce((s, i) => s + parseFloat(i.PaidAmount || 0), 0)
+    const availablePayments = vendorPayments - vendorReceipts - vendorPaidInvoices
+    
+    if (parseFloat(payForm.Amount) > availablePayments) {
+      return alert(`Cannot pay. Available vendor payments: ${fmt(availablePayments)}`)
+    }
+
     setPaying(true)
     try {
       await apiCall("Pay Vendor Invoice", {
@@ -103,12 +119,14 @@ export default function VendorInvoicePage() {
   const load = async () => {
     setLoading(true)
     try {
-      const [invRes, vRes] = await Promise.all([
+      const [invRes, vRes, tRes] = await Promise.all([
         apiCall("Get Vendor Invoices"),
         apiCall("Get Vendor List"),
+        apiCall("Get Treasury Transactions", {})
       ])
       setInvoices(invRes.List0 || [])
       setVendors((vRes.List0 || []).map(v => v.VendorName))
+      setTreasury(tRes.List0 || [])
     } catch (e) { console.error(e) }
     setLoading(false)
   }
@@ -116,9 +134,22 @@ export default function VendorInvoicePage() {
   useEffect(() => { load() }, [])
 
   const filtered = invoices.filter(i =>
-    !search || i.VendorName?.toLowerCase().includes(search.toLowerCase()) ||
-    i.InvoiceNo?.toLowerCase().includes(search.toLowerCase())
+    (!selectedVendor || i.VendorName?.trim() === selectedVendor.trim()) &&
+    (!search || i.VendorName?.toLowerCase().includes(search.toLowerCase()) ||
+     i.InvoiceNo?.toLowerCase().includes(search.toLowerCase()))
   )
+
+  const sorted = [...filtered].sort((a, b) => {
+    if (sortBy === "date") {
+      const dA = a.InvoiceDate || ""
+      const dB = b.InvoiceDate || ""
+      return sortOrder === "asc" ? dA.localeCompare(dB) : dB.localeCompare(dA)
+    } else {
+      const nA = a.VendorName || ""
+      const nB = b.VendorName || ""
+      return sortOrder === "asc" ? nA.localeCompare(nB) : nB.localeCompare(nA)
+    }
+  })
 
   // KPIs
   const total    = invoices.reduce((s, i) => s + parseFloat(i.SubTotal    || 0), 0)
@@ -173,6 +204,26 @@ export default function VendorInvoicePage() {
     } catch (e) { alert(e.message) }
   }
 
+  const resetPay = async (id) => {
+    console.log("resetPay function started for InvoiceID:", id)
+    console.log("Calling API...")
+    try {
+      const res = await apiCall("Reset Vendor Invoice Payment", { InvoiceID: id })
+      console.log("API response received:", res)
+      load()
+    } catch (e) {
+      console.error("API call failed:", e)
+      alert(e.message)
+    }
+  }
+
+  const lockInvoice = async (id) => {
+    try {
+      await apiCall("Lock Vendor Invoice", { InvoiceID: id })
+      load()
+    } catch (e) { alert(e.message) }
+  }
+
   const columns = [
     { key: "InvoiceNo",   label: "Invoice #",  render: v => <strong>{v}</strong> },
     { key: "VendorName",  label: "Vendor" },
@@ -187,11 +238,21 @@ export default function VendorInvoicePage() {
     { key: "PaidAmount",  label: "Paid",        render: v => <span style={{ color: "#16a34a" }}>{fmt(v)}</span> },
     { key: "Balance",     label: "Balance",     render: v => <span style={{ color: parseFloat(v) > 0 ? "#991b1b" : "#16a34a", fontWeight: 700 }}>{fmt(v)}</span> },
     { key: "Status",      label: "Status",      render: v => <Badge label={v} /> },
-    { key: "_act",        label: "",            render: (_, row) => (
+    { key: "_act",        label: "",            render: (_, row) => row.Status === "Locked" ? (
+      <span style={{ fontSize: 13, color: "#64748b", fontStyle: "italic", padding: "4px 8px", background: "#f1f5f9", borderRadius: 6, display: "inline-flex", alignItems: "center", gap: 4 }}>
+        🔒 Locked
+      </span>
+    ) : (
       <div style={{ display: "flex", gap: 6 }}>
         <Btn variant="outline" size="sm" onClick={() => openEdit(row)}>Edit</Btn>
         {parseFloat(row.Balance) > 0 && (
           <Btn variant="primary" size="sm" onClick={() => openPay(row)}>💳 Pay</Btn>
+        )}
+        {parseFloat(row.PaidAmount) > 0 && (
+          <Btn variant="outline" size="sm" onClick={() => resetPay(row.InvoiceID)} style={{ borderColor: "#f97316", color: "#f97316" }}>🔄 Reset</Btn>
+        )}
+        {row.Status === "Paid" && (
+          <Btn variant="outline" size="sm" onClick={() => lockInvoice(row.InvoiceID)} style={{ borderColor: "#64748b", color: "#475569" }}>🔒 Lock</Btn>
         )}
         <Btn variant="danger"  size="sm" onClick={() => del(row.InvoiceID)}>Delete</Btn>
       </div>
@@ -212,13 +273,27 @@ export default function VendorInvoicePage() {
         action={
           <div style={{ display: "flex", gap: 8 }}>
             <Btn variant="outline" onClick={load} title="Refresh">↻</Btn>
+            <Select value={selectedVendor} onChange={e => setSelectedVendor(e.target.value)} style={{ width: 180 }}>
+              <option value="">All Vendors</option>
+              {vendors.map(v => <option key={v} value={v}>{v}</option>)}
+            </Select>
+            <Select value={`${sortBy}-${sortOrder}`} onChange={e => {
+              const [by, order] = e.target.value.split("-")
+              setSortBy(by)
+              setSortOrder(order)
+            }} style={{ width: 180 }}>
+              <option value="date-desc">Newest Date First</option>
+              <option value="date-asc">Oldest Date First</option>
+              <option value="name-asc">Vendor A-Z</option>
+              <option value="name-desc">Vendor Z-A</option>
+            </Select>
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search..."
               style={{ padding: "9px 13px", border: "1.5px solid #e4e9f0", borderRadius: 9, fontSize: 14, fontFamily: "inherit", width: 180 }} />
             <Btn onClick={openAdd}>+ New Invoice</Btn>
           </div>
         }
       >
-        <DataTable columns={columns} rows={filtered} loading={loading} />
+        <DataTable columns={columns} rows={sorted} loading={loading} />
         {/* Summary */}
         <div style={{ padding: "14px 24px", borderTop: "1px solid #e4e9f0", display: "flex", justifyContent: "flex-end", gap: 32 }}>
           <div style={{ textAlign: "center" }}>
@@ -267,7 +342,7 @@ export default function VendorInvoicePage() {
       </Modal>
 
       {/* ── Pay Modal ── */}
-      <Modal open={payModal} onClose={() => setPayModal(false)} width={460}
+      <Modal open={payModal} onClose={() => setPayModal(false)} width={580}
         title={"Pay Invoice — " + (payInv?.InvoiceNo || "")}
         footer={<>
           <Btn variant="outline" onClick={() => setPayModal(false)}>Cancel</Btn>
@@ -279,7 +354,7 @@ export default function VendorInvoicePage() {
             {/* Invoice summary */}
             <div style={{
               background: "#f8fafc", borderRadius: 10, padding: "14px 16px",
-              marginBottom: 20, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12,
+              marginBottom: 20, display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12,
             }}>
               <div>
                 <div style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>VENDOR</div>
@@ -292,6 +367,16 @@ export default function VendorInvoicePage() {
               <div>
                 <div style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>BALANCE DUE</div>
                 <div style={{ fontSize: 14, fontWeight: 800, color: "#991b1b", marginTop: 2 }}>{fmt(payInv.Balance)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>AVAILABLE PAYMENTS</div>
+                <div style={{ fontSize: 14, fontWeight: 700, marginTop: 2, color: "#16a34a" }}>
+                  {fmt(
+                    treasury.filter(t => norm(t.Party) === norm(payInv.VendorName) && t.TxType === "Payment").reduce((s, t) => s + parseFloat(t.Amount || 0), 0) -
+                    treasury.filter(t => norm(t.Party) === norm(payInv.VendorName) && t.TxType === "Receipt").reduce((s, t) => s + parseFloat(t.Amount || 0), 0) -
+                    invoices.filter(i => norm(i.VendorName) === norm(payInv.VendorName)).reduce((s, i) => s + parseFloat(i.PaidAmount || 0), 0)
+                  )}
+                </div>
               </div>
             </div>
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react"
 import { apiCall, fmt, today } from "../../shared/api.js"
-import { KPICard, SectionCard, DataTable, Btn, Badge, Modal, FormGrid, Field, Input, Textarea, LinesEditor } from "../../shared/UI.jsx"
+import { KPICard, SectionCard, DataTable, Btn, Badge, Modal, FormGrid, Field, Input, Select, Textarea, LinesEditor } from "../../shared/UI.jsx"
 
 function AutoComplete({ value, onChange, options, placeholder }) {
   const [open, setOpen]   = useState(false)
@@ -56,11 +56,16 @@ function AutoComplete({ value, onChange, options, placeholder }) {
 
 const EMPTY_HDR = { CustomerName: "", InvoiceNo: "", InvoiceDate: today(), DueDate: "", Notes: "" }
 
+const norm = (str) => (str || "").replace(/\s+/g, "").toLowerCase()
+
 export default function CustomerInvoicePage() {
   const [invoices, setInvoices]   = useState([])
   const [customers, setCustomers] = useState([])
   const [loading, setLoading]     = useState(true)
   const [search, setSearch]       = useState("")
+  const [selectedCustomer, setSelectedCustomer] = useState("")
+  const [sortBy, setSortBy]       = useState("date")
+  const [sortOrder, setSortOrder] = useState("desc")
   const [modal, setModal]         = useState(false)
   const [form, setForm]           = useState(EMPTY_HDR)
   const [lines, setLines]         = useState([])
@@ -70,16 +75,19 @@ export default function CustomerInvoicePage() {
   const [collectInv, setCollectInv]     = useState(null)
   const [collectForm, setCollectForm]   = useState({ Amount: "", PayDate: today(), Notes: "" })
   const [collecting, setCollecting]     = useState(false)
+  const [treasury, setTreasury]         = useState([])
 
   const load = async () => {
     setLoading(true)
     try {
-      const [invRes, cRes] = await Promise.all([
+      const [invRes, cRes, tRes] = await Promise.all([
         apiCall("Get Customer Invoices"),
         apiCall("Get Customer List"),
+        apiCall("Get Treasury Transactions", {})
       ])
       setInvoices(invRes.List0 || [])
       setCustomers((cRes.List0 || []).map(c => c.CustomerName))
+      setTreasury(tRes.List0 || [])
     } catch (e) { console.error(e) }
     setLoading(false)
   }
@@ -87,9 +95,22 @@ export default function CustomerInvoicePage() {
   useEffect(() => { load() }, [])
 
   const filtered = invoices.filter(i =>
-    !search || i.CustomerName?.toLowerCase().includes(search.toLowerCase()) ||
-    i.InvoiceNo?.toLowerCase().includes(search.toLowerCase())
+    (!selectedCustomer || i.CustomerName?.trim() === selectedCustomer.trim()) &&
+    (!search || i.CustomerName?.toLowerCase().includes(search.toLowerCase()) ||
+     i.InvoiceNo?.toLowerCase().includes(search.toLowerCase()))
   )
+
+  const sorted = [...filtered].sort((a, b) => {
+    if (sortBy === "date") {
+      const dA = a.InvoiceDate || ""
+      const dB = b.InvoiceDate || ""
+      return sortOrder === "asc" ? dA.localeCompare(dB) : dB.localeCompare(dA)
+    } else {
+      const nA = a.CustomerName || ""
+      const nB = b.CustomerName || ""
+      return sortOrder === "asc" ? nA.localeCompare(nB) : nB.localeCompare(nA)
+    }
+  })
 
   const total     = invoices.reduce((s, i) => s + parseFloat(i.SubTotal         || 0), 0)
   const collected = invoices.reduce((s, i) => s + parseFloat(i.CollectedAmount  || 0), 0)
@@ -144,6 +165,16 @@ export default function CustomerInvoicePage() {
   const submitCollect = async () => {
     if (!collectForm.Amount || parseFloat(collectForm.Amount) <= 0) return alert("Enter a valid amount")
     if (parseFloat(collectForm.Amount) > parseFloat(collectInv.Balance)) return alert("Amount exceeds invoice balance of " + fmt(collectInv.Balance))
+    
+    const customerReceipts = treasury.filter(t => norm(t.Party) === norm(collectInv.CustomerName) && t.TxType === "Receipt").reduce((s, t) => s + parseFloat(t.Amount || 0), 0)
+    const customerPayments = treasury.filter(t => norm(t.Party) === norm(collectInv.CustomerName) && t.TxType === "Payment").reduce((s, t) => s + parseFloat(t.Amount || 0), 0)
+    const customerCollected = invoices.filter(i => norm(i.CustomerName) === norm(collectInv.CustomerName)).reduce((s, i) => s + parseFloat(i.CollectedAmount || 0), 0)
+    const availablePayments = customerReceipts - customerPayments - customerCollected
+    
+    if (parseFloat(collectForm.Amount) > availablePayments) {
+      return alert(`Cannot collect. Available customer payments: ${fmt(availablePayments)}`)
+    }
+    
     setCollecting(true)
     try {
       await apiCall("Collect Customer Invoice", {
@@ -166,6 +197,20 @@ export default function CustomerInvoicePage() {
     } catch (e) { alert(e.message) }
   }
 
+  const lockInvoice = async (id) => {
+    try {
+      await apiCall("Lock Customer Invoice", { InvoiceID: id })
+      load()
+    } catch (e) { alert(e.message) }
+  }
+
+  const resetCollection = async (id) => {
+    try {
+      await apiCall("Reset Customer Invoice Collection", { InvoiceID: id })
+      load()
+    } catch (e) { alert(e.message) }
+  }
+
   const columns = [
     { key: "InvoiceNo",       label: "Invoice #",  render: v => <strong>{v}</strong> },
     { key: "CustomerName",    label: "Customer" },
@@ -180,11 +225,21 @@ export default function CustomerInvoicePage() {
     { key: "CollectedAmount", label: "Collected",   render: v => <span style={{ color: "#16a34a" }}>{fmt(v)}</span> },
     { key: "Balance",         label: "Balance",     render: v => <span style={{ color: parseFloat(v) > 0 ? "#991b1b" : "#16a34a", fontWeight: 700 }}>{fmt(v)}</span> },
     { key: "Status",          label: "Status",      render: v => <Badge label={v} /> },
-    { key: "_act",            label: "",            render: (_, row) => (
+    { key: "_act",            label: "",            render: (_, row) => row.Status === "Locked" ? (
+      <span style={{ fontSize: 13, color: "#64748b", fontStyle: "italic", padding: "4px 8px", background: "#f1f5f9", borderRadius: 6, display: "inline-flex", alignItems: "center", gap: 4 }}>
+        🔒 Locked
+      </span>
+    ) : (
       <div style={{ display: "flex", gap: 6 }}>
         <Btn variant="outline" size="sm" onClick={() => openEdit(row)}>Edit</Btn>
         {parseFloat(row.Balance) > 0 && (
           <Btn variant="primary" size="sm" onClick={() => openCollect(row)}>💰 Collect</Btn>
+        )}
+        {parseFloat(row.CollectedAmount) > 0 && (
+          <Btn variant="outline" size="sm" onClick={() => resetCollection(row.InvoiceID)} style={{ borderColor: "#f97316", color: "#f97316" }}>🔄 Reset</Btn>
+        )}
+        {row.Status === "Paid" && (
+          <Btn variant="outline" size="sm" onClick={() => lockInvoice(row.InvoiceID)} style={{ borderColor: "#64748b", color: "#475569" }}>🔒 Lock</Btn>
         )}
         <Btn variant="danger" size="sm" onClick={() => del(row.InvoiceID)}>Delete</Btn>
       </div>
@@ -205,13 +260,27 @@ export default function CustomerInvoicePage() {
         action={
           <div style={{ display: "flex", gap: 8 }}>
             <Btn variant="outline" onClick={load} title="Refresh">↻</Btn>
+            <Select value={selectedCustomer} onChange={e => setSelectedCustomer(e.target.value)} style={{ width: 180 }}>
+              <option value="">All Customers</option>
+              {customers.map(c => <option key={c} value={c}>{c}</option>)}
+            </Select>
+            <Select value={`${sortBy}-${sortOrder}`} onChange={e => {
+              const [by, order] = e.target.value.split("-")
+              setSortBy(by)
+              setSortOrder(order)
+            }} style={{ width: 180 }}>
+              <option value="date-desc">Newest Date First</option>
+              <option value="date-asc">Oldest Date First</option>
+              <option value="name-asc">Customer A-Z</option>
+              <option value="name-desc">Customer Z-A</option>
+            </Select>
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search..."
               style={{ padding: "9px 13px", border: "1.5px solid #e4e9f0", borderRadius: 9, fontSize: 14, fontFamily: "inherit", width: 180 }} />
             <Btn onClick={openAdd}>+ New Invoice</Btn>
           </div>
         }
       >
-        <DataTable columns={columns} rows={filtered} loading={loading} />
+        <DataTable columns={columns} rows={sorted} loading={loading} />
         <div style={{ padding: "14px 24px", borderTop: "1px solid #e4e9f0", display: "flex", justifyContent: "flex-end", gap: 32 }}>
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>Total Invoiced</div>
@@ -271,11 +340,21 @@ export default function CustomerInvoicePage() {
           <div>
             <div style={{
               background: "#f8fafc", borderRadius: 10, padding: "14px 16px",
-              marginBottom: 20, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12,
+              marginBottom: 20, display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12,
             }}>
               <div>
                 <div style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>CUSTOMER</div>
                 <div style={{ fontSize: 14, fontWeight: 700, marginTop: 2 }}>{collectInv.CustomerName}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>AVAILABLE PAYMENTS</div>
+                <div style={{ fontSize: 14, fontWeight: 700, marginTop: 2, color: "#16a34a" }}>
+                  {fmt(
+                    treasury.filter(t => norm(t.Party) === norm(collectInv.CustomerName) && t.TxType === "Receipt").reduce((s, t) => s + parseFloat(t.Amount || 0), 0) -
+                    treasury.filter(t => norm(t.Party) === norm(collectInv.CustomerName) && t.TxType === "Payment").reduce((s, t) => s + parseFloat(t.Amount || 0), 0) -
+                    invoices.filter(i => norm(i.CustomerName) === norm(collectInv.CustomerName)).reduce((s, i) => s + parseFloat(i.CollectedAmount || 0), 0)
+                  )}
+                </div>
               </div>
               <div>
                 <div style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>TOTAL</div>

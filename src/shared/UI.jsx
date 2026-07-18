@@ -92,7 +92,7 @@ export function Field({ label, full, children }) {
   )
 }
 
-export function Input({ value, onChange, placeholder, type = "text", style = {} }) {
+export function Input({ value, onChange, placeholder, type = "text", style = {}, ...rest }) {
   return (
     <input
       type={type} value={value} onChange={onChange} placeholder={placeholder}
@@ -104,6 +104,7 @@ export function Input({ value, onChange, placeholder, type = "text", style = {} 
       }}
       onFocus={e => e.target.style.borderColor = "#f97316"}
       onBlur={e => e.target.style.borderColor = "#e4e9f0"}
+      {...rest}
     />
   )
 }
